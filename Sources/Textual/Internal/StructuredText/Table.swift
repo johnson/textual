@@ -10,11 +10,22 @@ import SwiftUI
 extension StructuredText {
   struct Table: View {
     @Environment(\.tableStyle) private var tableStyle
+    @Environment(\.tableMeasurementFont) private var tableMeasurementFont
+    @Environment(\.tableVirtualizationEnabled) private var virtualizationEnabled
 
     @State private var spacing = TableCell.Spacing()
     @State private var virtualGeometry: VirtualTableGeometry?
+    @State private var virtualizationFailed = false
 
     private static let virtualizationThreshold = 64
+
+    private static var virtualizationSupported: Bool {
+      #if os(macOS) || os(iOS) || os(tvOS) || os(visionOS)
+      true
+      #else
+      false
+      #endif
+    }
 
     private let intent: PresentationIntent.IntentType?
     private let content: AttributedSubstring
@@ -47,7 +58,9 @@ extension StructuredText {
     private var label: some View {
       let rowRuns = content.blockRuns(parent: intent)
 
-      if rowRuns.count > Self.virtualizationThreshold {
+      if virtualizationEnabled, Self.virtualizationSupported, !virtualizationFailed,
+        rowRuns.count > Self.virtualizationThreshold
+      {
         if let geometry = virtualGeometry {
           virtualLabel(rowRuns: rowRuns, geometry: geometry)
         } else {
@@ -114,14 +127,23 @@ extension StructuredText {
     }
 
     private func measureVirtualGeometry() {
-      guard virtualGeometry == nil else { return }
+      guard virtualGeometry == nil, !virtualizationFailed else { return }
       #if os(macOS) || os(iOS) || os(tvOS) || os(visionOS)
-      virtualGeometry = VirtualTableMeasurer.measure(
+      if let geometry = VirtualTableMeasurer.measure(
         content: content,
         intent: intent,
         columns: columns,
-        spacing: spacing
-      )
+        spacing: spacing,
+        font: tableMeasurementFont
+      ) {
+        virtualGeometry = geometry
+      } else {
+        // The configured font could not be resolved (or geometry is unusable):
+        // fall back to the exact Grid path rather than an empty placeholder.
+        virtualizationFailed = true
+      }
+      #else
+      virtualizationFailed = true
       #endif
     }
 

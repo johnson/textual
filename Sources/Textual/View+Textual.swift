@@ -137,6 +137,30 @@ extension TextualNamespace where Base: View {
     base.modifier(FontScaleModifier(scale))
   }
 
+  /// Sets the platform font used to measure large tables.
+  ///
+  /// Provide the font the preview actually renders with so windowed large tables
+  /// keep exact column widths for custom families. Pass a nil family for the
+  /// system font; if the family cannot be resolved the table falls back to the
+  /// exact Grid path.
+  public func tableMeasurementFont(
+    familyName: String?,
+    pointSize: CGFloat
+  ) -> some View {
+    base.environment(
+      \.tableMeasurementFont,
+      StructuredText.TableFont(familyName: familyName, pointSize: pointSize)
+    )
+  }
+
+  /// Enables or disables the windowed render path for very large tables.
+  ///
+  /// Enabled by default. Disabling it restores the exact Grid path for every
+  /// table, which is useful for A/B geometry comparisons and as a safety valve.
+  public func tableVirtualization(_ enabled: Bool) -> some View {
+    base.environment(\.tableVirtualizationEnabled, enabled)
+  }
+
   /// Sets the attachment loader used to resolve image attachments.
   public func imageAttachmentLoader(_ loader: some AttachmentLoader) -> some View {
     base.environment(\.imageAttachmentLoader, loader)

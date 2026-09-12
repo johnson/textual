@@ -22,6 +22,46 @@ extension StructuredText {
     var totalSize: CGSize
   }
 
+  /// The platform font used to measure large-table geometry.
+  ///
+  /// Pass the font the preview actually renders with so column widths stay exact
+  /// for custom families. A nil familyName means the system font; if the family
+  /// cannot be resolved, measurement fails and the table falls back to the exact
+  /// Grid path.
+  public struct TableFont: Hashable, Sendable {
+    /// The font family name, or nil for the system font.
+    public var familyName: String?
+    /// The point size to measure at.
+    public var pointSize: CGFloat
+
+    public init(familyName: String? = nil, pointSize: CGFloat) {
+      self.familyName = familyName
+      self.pointSize = pointSize
+    }
+  }
+}
+
+private struct TableMeasurementFontKey: EnvironmentKey {
+  static let defaultValue: StructuredText.TableFont? = nil
+}
+
+extension EnvironmentValues {
+  var tableMeasurementFont: StructuredText.TableFont? {
+    get { self[TableMeasurementFontKey.self] }
+    set { self[TableMeasurementFontKey.self] = newValue }
+  }
+}
+
+private struct TableVirtualizationKey: EnvironmentKey {
+  static let defaultValue = true
+}
+
+extension EnvironmentValues {
+  /// Whether very large tables render through the windowed path.
+  var tableVirtualizationEnabled: Bool {
+    get { self[TableVirtualizationKey.self] }
+    set { self[TableVirtualizationKey.self] = newValue }
+  }
 }
 
 #if os(macOS) || os(iOS) || os(tvOS) || os(visionOS)
@@ -31,46 +71,68 @@ extension StructuredText {
     static let verticalPadding: CGFloat = 6
     static let lineSpacingRatio: CGFloat = 0.25
 
-    static var baseFont: VirtualFont {
-      VirtualFont.preferredFont(forTextStyle: .body)
-    }
-
-    static func font(bold: Bool, italic: Bool, code: Bool, size: CGFloat) -> VirtualFont {
-      var font: VirtualFont
-      if code {
-        font = VirtualFont.monospacedSystemFont(ofSize: size, weight: bold ? .semibold : .regular)
-      } else {
-        font = VirtualFont.systemFont(ofSize: size, weight: bold ? .semibold : .regular)
+    /// Resolves the configured font, or nil when a named family cannot be loaded.
+    static func resolveBaseFont(_ descriptor: TableFont?) -> VirtualFont? {
+      guard let descriptor else {
+        return VirtualFont.preferredFont(forTextStyle: .body)
       }
-      if italic {
+      if let family = descriptor.familyName, !family.isEmpty {
         #if os(macOS)
-        let traits = font.fontDescriptor.symbolicTraits.union(.italic)
-        let descriptor = font.fontDescriptor.withSymbolicTraits(traits)
-        font = NSFont(descriptor: descriptor, size: size) ?? font
+        return NSFont(name: family, size: descriptor.pointSize)
         #else
-        let traits = font.fontDescriptor.symbolicTraits.union(.traitItalic)
-        if let descriptor = font.fontDescriptor.withSymbolicTraits(traits) {
-          font = UIFont(descriptor: descriptor, size: size)
-        }
+        return UIFont(name: family, size: descriptor.pointSize)
         #endif
       }
-      return font
+      return VirtualFont.systemFont(ofSize: descriptor.pointSize)
     }
 
-    static func attributedString(for slice: AttributedSubstring, header: Bool) -> NSAttributedString {
-      let base = baseFont
+    static func withTraits(_ font: VirtualFont, bold: Bool, italic: Bool) -> VirtualFont {
+      guard bold || italic else { return font }
+      #if os(macOS)
+      var traits = font.fontDescriptor.symbolicTraits
+      if bold { traits.insert(.bold) }
+      if italic { traits.insert(.italic) }
+      return NSFont(descriptor: font.fontDescriptor.withSymbolicTraits(traits), size: font.pointSize) ?? font
+      #else
+      var traits = font.fontDescriptor.symbolicTraits
+      if bold { traits.insert(.traitBold) }
+      if italic { traits.insert(.traitItalic) }
+      if let descriptor = font.fontDescriptor.withSymbolicTraits(traits) {
+        return UIFont(descriptor: descriptor, size: font.pointSize)
+      }
+      return font
+      #endif
+    }
+
+    static func font(base: VirtualFont, bold: Bool, italic: Bool, code: Bool) -> VirtualFont {
+      if code {
+        return VirtualFont.monospacedSystemFont(
+          ofSize: base.pointSize,
+          weight: bold ? .semibold : .regular
+        )
+      }
+      return withTraits(base, bold: bold, italic: italic)
+    }
+
+    static func attributedString(
+      for slice: AttributedSubstring,
+      header: Bool,
+      base: VirtualFont
+    ) -> NSAttributedString {
       let result = NSMutableAttributedString()
       for run in slice.runs {
         let intent = run.inlinePresentationIntent
         let code = intent?.contains(.code) ?? false
         let bold = header || (intent?.contains(.stronglyEmphasized) ?? false)
         let italic = intent?.contains(.emphasized) ?? false
-        let font = font(bold: bold, italic: italic, code: code, size: base.pointSize)
+        let font = font(base: base, bold: bold, italic: italic, code: code)
         var attributes: [NSAttributedString.Key: Any] = [.font: font]
         if intent?.contains(.strikethrough) == true {
           attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
         }
-        result.append(NSAttributedString(string: String(slice[run.range].characters), attributes: attributes))
+        result.append(
+          NSAttributedString(string: String(slice[run.range].characters), attributes: attributes)
+        )
       }
       if result.length == 0 {
         result.append(NSAttributedString(string: "", attributes: [.font: base]))
@@ -94,8 +156,11 @@ extension StructuredText {
       content: AttributedSubstring,
       intent: PresentationIntent.IntentType?,
       columns: [PresentationIntent.TableColumn],
-      spacing: TableCell.Spacing
+      spacing: TableCell.Spacing,
+      font fontDescriptor: TableFont?
     ) -> VirtualTableGeometry? {
+      guard let base = resolveBaseFont(fontDescriptor) else { return nil }
+
       let rowRuns = content.blockRuns(parent: intent)
       guard !rowRuns.isEmpty else { return nil }
 
@@ -106,7 +171,9 @@ extension StructuredText {
         let rowContent = content[rowRun.range]
         let columnRuns = rowContent.blockRuns(parent: rowRun.intent)
         columnCount = max(columnCount, columnRuns.count)
-        rows.append(columnRuns.map { attributedString(for: rowContent[$0.range], header: index == 0) })
+        rows.append(
+          columnRuns.map { attributedString(for: rowContent[$0.range], header: index == 0, base: base) }
+        )
       }
       guard columnCount > 0 else { return nil }
 

@@ -12,6 +12,9 @@ extension StructuredText {
     @Environment(\.tableStyle) private var tableStyle
 
     @State private var spacing = TableCell.Spacing()
+    @State private var virtualGeometry: VirtualTableGeometry?
+
+    private static let virtualizationThreshold = 64
 
     private let intent: PresentationIntent.IntentType?
     private let content: AttributedSubstring
@@ -44,6 +47,21 @@ extension StructuredText {
     private var label: some View {
       let rowRuns = content.blockRuns(parent: intent)
 
+      if rowRuns.count > Self.virtualizationThreshold {
+        if let geometry = virtualGeometry {
+          virtualLabel(rowRuns: rowRuns, geometry: geometry)
+        } else {
+          Color.clear
+            .frame(height: CGFloat(rowRuns.count) * 30)
+            .onAppear(perform: measureVirtualGeometry)
+        }
+      } else {
+        exactLabel(rowRuns: rowRuns)
+      }
+    }
+
+    @ViewBuilder
+    private func exactLabel(rowRuns: AttributedString.BlockRuns) -> some View {
       Grid(horizontalSpacing: spacing.horizontal, verticalSpacing: spacing.vertical) {
         ForEach(rowRuns.indices, id: \.self) { rowIndex in
           let rowRun = rowRuns[rowIndex]
@@ -61,6 +79,50 @@ extension StructuredText {
           }
         }
       }
+    }
+
+    @ViewBuilder
+    private func virtualLabel(rowRuns: AttributedString.BlockRuns, geometry: VirtualTableGeometry) -> some View {
+      LazyVStack(alignment: .leading, spacing: spacing.vertical ?? 0) {
+        ForEach(rowRuns.indices, id: \.self) { rowIndex in
+          let rowRun = rowRuns[rowIndex]
+          let rowContent = content[rowRun.range]
+          let columnRuns = rowContent.blockRuns(parent: rowRun.intent)
+
+          HStack(alignment: .top, spacing: spacing.horizontal ?? 0) {
+            ForEach(columnRuns.indices, id: \.self) { columnIndex in
+              let cellRun = columnRuns[columnIndex]
+              let cellContent = rowContent[cellRun.range]
+              let width = columnIndex < geometry.columnWidths.count
+                ? geometry.columnWidths[columnIndex]
+                : nil
+
+              TableCell(cellContent, row: rowIndex, column: columnIndex)
+                .frame(
+                  width: width,
+                  alignment: Alignment(horizontal: alignment(for: columnIndex), vertical: .top)
+                )
+            }
+          }
+          .frame(
+            height: rowIndex < geometry.rowHeights.count ? geometry.rowHeights[rowIndex] : nil,
+            alignment: .top
+          )
+        }
+      }
+      .frame(height: geometry.totalSize.height, alignment: .top)
+    }
+
+    private func measureVirtualGeometry() {
+      guard virtualGeometry == nil else { return }
+      #if os(macOS) || os(iOS) || os(tvOS) || os(visionOS)
+      virtualGeometry = VirtualTableMeasurer.measure(
+        content: content,
+        intent: intent,
+        columns: columns,
+        spacing: spacing
+      )
+      #endif
     }
 
     private var indentationLevel: Int {

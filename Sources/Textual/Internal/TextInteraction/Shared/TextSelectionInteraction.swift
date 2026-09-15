@@ -17,6 +17,8 @@ struct TextSelectionInteraction: ViewModifier {
     @Environment(TextSelectionCoordinator.self) private var coordinator: TextSelectionCoordinator?
 
     @State private var model = TextSelectionModel()
+    /// Coalesces the per-scroll-frame layout bursts into one model update.
+    @State private var pendingLayoutUpdate: Task<Void, Never>?
   #endif
 
   func body(content: Content) -> some View {
@@ -26,12 +28,16 @@ struct TextSelectionInteraction: ViewModifier {
           .overlayTextLayoutCollection { layoutCollection in
             Color.clear
               .onChange(of: AnyTextLayoutCollection(layoutCollection), initial: true) {
-                // Mutating the selection model synchronously here re-enters
-                // the current view-update pass ("tried to update multiple
-                // times per frame"); with lazy layouts the collection changes
-                // on every scroll frame, which stalls scrolling. Deferring to
-                // the next run-loop turn coalesces the burst.
-                Task { @MainActor in
+                // With lazy layouts the collection changes on every scroll
+                // frame; applying it synchronously re-enters the view-update
+                // pass and stalls scrolling. Debounce: cancel the previous
+                // pending update and apply only the latest collection after
+                // the burst settles. Selection only needs the layout once
+                // scrolling stops, so dropping intermediate frames is safe.
+                pendingLayoutUpdate?.cancel()
+                pendingLayoutUpdate = Task { @MainActor in
+                  try? await Task.sleep(nanoseconds: 120_000_000)  // 120 ms
+                  guard !Task.isCancelled else { return }
                   model.setCoordinator(coordinator)
                   model.setLayoutCollection(layoutCollection)
                 }

@@ -25,6 +25,11 @@ struct Image: Hashable, Sendable {
 }
 
 extension Image {
+  /// Largest decoded frame dimension, in pixels. Camera photos (e.g.
+  /// 4032x3024) otherwise decode to ~48 MB bitmaps each; the preview never
+  /// displays anything close to that, so we downsample at decode time.
+  static let maxDecodedPixelSize = 2048
+
   init?(data: Data) {
     guard let cgImageSource = CGImageSourceCreateWithData(data as CFData, nil) else {
       return nil
@@ -34,7 +39,7 @@ extension Image {
     case 0:
       return nil
     case 1:
-      guard let cgImage = CGImageSourceCreateImageAtIndex(cgImageSource, 0, nil) else {
+      guard let cgImage = cgImageSource.downsampledFrame(at: 0) else {
         return nil
       }
       self.init(cgImage: cgImage)
@@ -61,7 +66,7 @@ extension Image {
 
     let images = (0..<CGImageSourceGetCount(cgImageSource))
       .compactMap { index in
-        CGImageSourceCreateImageAtIndex(cgImageSource, index, nil)
+        cgImageSource.downsampledFrame(at: index)
       }
 
     guard !images.isEmpty else {
@@ -91,6 +96,21 @@ extension Image {
       loopCount: animationProperties[.loopCount] ?? 0,
       size: size
     )
+  }
+}
+
+extension CGImageSource {
+  /// Decodes the frame at the given index, downsampled so neither dimension
+  /// exceeds Image.maxDecodedPixelSize. Downsampling via a thumbnail is both
+  /// faster and uses a fraction of the memory of a full-resolution decode.
+  fileprivate func downsampledFrame(at index: Int) -> CGImage? {
+    let options: [CFString: Any] = [
+      kCGImageSourceCreateThumbnailFromImageAlways: true,
+      kCGImageSourceCreateThumbnailWithTransform: true,
+      kCGImageSourceShouldCacheImmediately: true,
+      kCGImageSourceThumbnailMaxPixelSize: Image.maxDecodedPixelSize,
+    ]
+    return CGImageSourceCreateThumbnailAtIndex(self, index, options as CFDictionary)
   }
 }
 

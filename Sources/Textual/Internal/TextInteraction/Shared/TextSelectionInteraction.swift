@@ -26,8 +26,15 @@ struct TextSelectionInteraction: ViewModifier {
           .overlayTextLayoutCollection { layoutCollection in
             Color.clear
               .onChange(of: AnyTextLayoutCollection(layoutCollection), initial: true) {
-                model.setCoordinator(coordinator)
-                model.setLayoutCollection(layoutCollection)
+                // Mutating the selection model synchronously here re-enters
+                // the current view-update pass ("tried to update multiple
+                // times per frame"); with lazy layouts the collection changes
+                // on every scroll frame, which stalls scrolling. Deferring to
+                // the next run-loop turn coalesces the burst.
+                Task { @MainActor in
+                  model.setCoordinator(coordinator)
+                  model.setLayoutCollection(layoutCollection)
+                }
               }
           }
           .modifier(PlatformTextSelectionInteraction(model: model))
